@@ -45,15 +45,17 @@ Mỗi skill card có chung format:
   - `docs/02-MODULES-INDEX.md` (đúng section)
   - `tool-wptangtoc-ols/<module>/*` (chỉ scripts xuất hiện trong section)
   - `docs/01-ARCHITECTURE-FLOW.md` (nếu cần impact layers/state conventions)
+  - `docs/09-CRON-INVENTORY.md`, `docs/10-SYSTEMD-INVENTORY.md` (nếu module tạo artefact runtime)
+  - `docs/11-SHELL-HOOKS-INVENTORY.md`, `docs/12-ROOT-HELPERS-INVENTORY.md` (nếu module đụng shell hooks/helper root)
 - **Steps**:
-  - đọc section module hiện có → xác định TODO/gap
+  - đọc section module hiện có → xác định coverage còn thiếu hoặc chỗ docs chưa decision-complete
   - đọc scripts liên quan (entrypoint + sub-scripts)
   - chuẩn hoá mô tả theo: Context / Impact layer / State changes / Rollback / Verify / Pitfalls
   - cập nhật link nếu thêm file docs mới (docs index)
 - **Output contract**:
   - nêu rõ state files/paths và rollback cụ thể
 - **DoD**:
-  - section module không còn “TODO/cần đọc sâu” cho phần vừa làm
+  - section module không còn khoảng mù cho phần vừa làm
   - có rollback + verify
   - không lộ secrets
 
@@ -92,6 +94,8 @@ Mỗi skill card có chung format:
   - `docs/03-AI-AGENT-GUIDE.md` (firewall rules)
   - `docs/05-RUNBOOKS.md` (rollback-first)
   - `docs/02-MODULES-INDEX.md` (Security section liên quan)
+  - `docs/10-SYSTEMD-INVENTORY.md`
+  - `docs/11-SHELL-HOOKS-INVENTORY.md` (nếu đổi SSH/login hooks)
   - scripts trong `tool-wptangtoc-ols/bao-mat/**` liên quan
 - **Steps**:
   - pre-check: SSH port, current firewall layer active
@@ -113,6 +117,7 @@ Mỗi skill card có chung format:
 - **Allowed reads**:
   - `docs/03-AI-AGENT-GUIDE.md` (secrets section)
   - module docs tương ứng trong `docs/02-MODULES-INDEX.md`
+  - `docs/11-SHELL-HOOKS-INVENTORY.md` nếu secret/alert đi qua shell hooks
 - **Steps**:
   - chỉ ghi location + permission expectations
   - không in token/password, không copy vào docs
@@ -132,6 +137,7 @@ Mỗi skill card có chung format:
   - `docs/02-MODULES-INDEX.md` sections: Database + Backup & Restore
   - scripts trong `tool-wptangtoc-ols/db/*` và/hoặc `tool-wptangtoc-ols/backup-restore/*`
   - `docs/05-RUNBOOKS.md`
+  - `docs/09-CRON-INVENTORY.md` nếu task có auto backup / retention
 - **Steps**:
   - bắt buộc cảnh báo data loss
   - backup-first hoặc ghi rõ “không có rollback dữ liệu”
@@ -141,7 +147,52 @@ Mỗi skill card có chung format:
 
 ---
 
-## Skill 07 — Task/Phase execution loop (plan approval workflow)
+## Skill 07 — Shell hooks / login-path changes
+
+- **Trigger**: task đụng `.bashrc`, alert login SSH, SFTP jail, `sshd_config`, user shell riêng domain.
+- **Inputs needed**:
+  - user/domain bị ảnh hưởng
+  - đây là root shell, per-site shell hay SSH/SFTP path
+- **Allowed reads**:
+  - `docs/11-SHELL-HOOKS-INVENTORY.md`
+  - `docs/02-MODULES-INDEX.md` sections: SSH, Domain / Vhost
+  - `docs/05-RUNBOOKS.md`
+  - scripts trong `tool-wptangtoc-ols/domain/*`, `tool-wptangtoc-ols/ssh/*`, `tool-wptangtoc-ols/bao-mat/*`
+- **Steps**:
+  - xác định artefact đích: `/root/.bashrc`, `/usr/local/lsws/<domain>/.bashrc`, hay `/etc/ssh/sshd_config`
+  - backup file trước khi sửa
+  - nếu sửa SSH config: luôn `sshd -t` trước restart
+  - nếu sửa shell hook: verify bằng shell interactive mới
+- **Output contract**:
+  - nêu rõ hook path, state changes, verify, rollback
+- **DoD**:
+  - không làm hỏng login path
+  - nếu đụng `sshd_config`, có verify syntax và rollback rõ
+
+---
+
+## Skill 08 — Root helpers / installer artefacts
+
+- **Trigger**: task đụng helper root-level như `kernel`, `oomscore`, `monit`, `disk*`, `proxy-setup`, `api-preload-wptangtoc`.
+- **Inputs needed**:
+  - helper script cụ thể
+  - đây là phân tích docs hay debug runtime artefact
+- **Allowed reads**:
+  - `docs/12-ROOT-HELPERS-INVENTORY.md`
+  - `docs/01-ARCHITECTURE-FLOW.md`
+  - `docs/09-CRON-INVENTORY.md`, `docs/10-SYSTEMD-INVENTORY.md` nếu helper tạo cron/unit
+  - script helper tương ứng trong root `tool-wptangtoc-ols/*`
+- **Steps**:
+  - xác định helper có side effect ở layer nào
+  - map helper → runtime files changed → verify → rollback
+  - nếu helper không đi qua menu main, phải ghi rõ điều đó trong output
+- **DoD**:
+  - không nhầm helper root-level với module menu chuẩn
+  - có đủ state/rollback để maintainer debug runtime artefact
+
+---
+
+## Skill 09 — Task/Phase execution loop (plan approval workflow)
 
 - **Trigger**: mọi task/phase > nhỏ lẻ.
 - **Inputs needed**:
@@ -149,6 +200,9 @@ Mỗi skill card có chung format:
 - **Allowed reads**:
   - `AGENTS.md`
   - `docs/07-AI-TUTORIAL-STEP-BY-STEP.md` (Step 0)
+  - `docs/04-ROADMAP-PHASE-TASKS.md` nếu task nằm trong docs/backlog
+  - `docs/13-BUG-TRIAGE-INDEX.md`, `docs/14-SOURCE-TO-RUNTIME-TRACE.md`, `docs/15-KNOWN-RISKS-PATTERNS.md` nếu task là fix bug / review / maintain
+  - `docs/16-PLATFORM-AGNOSTIC-CAPABILITIES.md`, `docs/17-PORTING-MAP-PHP-TO-OTHER-STACKS.md`, `docs/18-DESIGN-PATTERNS-EXTRACTED.md` nếu task là học logic để clone/port sang stack khác
 - **Steps**:
   - propose plan (scoped allowlist, risks, rollback, verify)
   - wait for approval

@@ -128,7 +128,46 @@ Khi maintain WPTangToc OLS, AI Agent cần biết/nhớ các khả năng sau:
   - alerting (Telegram).
 - **Backup**: zip/tar, mysqldump/mariadb, rclone.
 
-> TODO: Khi đọc sâu từng module, bổ sung “minimum knowledge” và “pitfalls” cụ thể (ưu tiên module rủi ro cao: firewall/DB/restore/XDP).
+### Minimum knowledge bắt buộc cho cụm rủi ro cao
+
+- **Firewall / fail2ban / nftables / XDP**:
+  - biết phân biệt firewall backend đang active là gì
+  - luôn đọc SSH port thật từ `sshd_config`, không assume `22`
+  - hiểu chỗ state nằm ở `httpd_config.conf`, `/etc/fail2ban/*`, `/etc/csf/*`, `/etc/nftables.conf` hoặc `/etc/sysconfig/nftables.conf`, `/sys/fs/bpf/*`
+- **DB destructive ops**:
+  - phân biệt create/drop/wipe/restore
+  - biết state per-site nằm ở `/etc/wptt/vhost/.$domain.conf`
+  - hiểu script có thể đụng DB grants, MariaDB config, firewall và fail2ban cùng lúc
+- **Restore**:
+  - restore thường overwrite docroot và drop/create DB
+  - không có “undo” thực sự nếu chưa có backup khác
+- **SSH / sshd_config / chroot**:
+  - hiểu `Match User`, `Subsystem sftp internal-sftp`, marker `#begin-WPTT_JAIL_*`
+  - luôn verify `sshd -t` trước khi restart nếu sửa trực tiếp config
+- **OLS config vs `.htaccess`**:
+  - global config ở `/usr/local/lsws/conf/httpd_config.conf`
+  - per-vhost ở `/usr/local/lsws/conf/vhosts/<domain>/<domain>.conf`
+  - per-site rule/redirect/cache marker ở `/usr/local/lsws/<domain>/html/.htaccess`
+- **PHP multi-version**:
+  - biết `lsphpXX` trên OLS, symlink CLI và `php-cli-domain-config`
+  - phân biệt PHP per-domain với PHP mặc định toàn server
+
+### Pitfalls cụ thể cần nhớ
+
+- **fail2ban vs firewall backend mismatch**:
+  - một số script đổi `banaction` theo `nftables` hoặc `firewalld`; rollback phải đổi cả backend liên quan
+- **Tên service DB không đồng nhất**:
+  - source có chỗ dùng `mysql.service`, chỗ khác dùng `mariadb.service`
+  - docs phải ghi rõ đây là bẫy compatibility, verify theo distro/runtime thật
+- **Repo template có thể lệch runtime**:
+  - runtime `/etc/wptt/*` là nguồn sự thật khi debug production
+- **Hook thông báo SSH login chỉ chạy qua interactive shell**:
+  - vì dựa vào `.bashrc` và biến `SSH_CLIENT`, không phải PAM/auditd
+- **Menu model dùng `exec`**:
+  - backtracking/debug stack menu khác shell app truyền thống; script con sẽ thay thế process hiện tại
+- **Premium/Add-ons có dependency runtime ngoài repo**:
+  - ví dụ `add-one/check.sh` hoặc logic API/remote files
+  - docs phải ghi rõ “runtime dependency”, không đoán behaviour nếu source hiện tại không chứa file đó
 
 ---
 
@@ -177,14 +216,14 @@ Nếu user chỉ hỏi “tại sao/hoạt động thế nào”:
 
 ---
 
-## 6) TODO: bổ sung AGENTS.md / Cursor rules (tuỳ chọn)
+## 6) AGENTS.md / Cursor rules
 
 Nếu muốn enforce mạnh hơn trong IDE:
 
 - [x] `AGENTS.md` ở root (AI must-read) — đã tạo.
 - [x] `.cursor/rules/*.md` để ràng buộc — đã tạo bộ rules tối thiểu.
 
-Chúng ta sẽ quyết định sau khi hoàn thiện inventory module.
+Đã có đủ inventory nền để dùng `AGENTS.md` và `.cursor/rules/*` làm lớp guard chính.
 
 ## 7) Links (điểm vào khi maintain)
 

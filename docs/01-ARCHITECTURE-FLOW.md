@@ -117,7 +117,7 @@ Tạm thời (sẽ chuẩn hoá khi đọc toàn bộ code):
 - Per-site rules marker: `.htaccess` markers kiểu `#begin-...`/`#end-...`
 - Audit log: `/var/log/wptangtoc-ols.log`
 
-## 6) TODO khi đọc sâu hơn
+## 6) Inventory status sau khi đọc sâu
 
 - [x] Xác định installer remote tạo/copy file thế nào từ `tool-wptangtoc-ols/` → `/etc/wptt/`.
   - **Installer entrypoints (repo)**:
@@ -126,17 +126,43 @@ Tạm thời (sẽ chuẩn hoá khi đọc toàn bộ code):
   - **Update/refresh installer (repo)**:
     - `ghi-de-update`: download `wptangtoc-ols.zip` → `\cp -rf tool-wptangtoc-ols/* /etc/wptt/` → refresh `/usr/bin/wptangtoc` & `/usr/bin/wptt`
     - `tool-wptangtoc-ols/wptt-cai-lai`: reinstall OLS + download zip + copy `/etc/wptt` + refresh `/usr/bin/*`
-- [~] Liệt kê các service/cron job do WPTT OLS tạo.
+- [x] Liệt kê các service/cron job do WPTT OLS tạo ở mức inventory runtime.
   - **Nguyên tắc**: phần lớn cron/service được tạo “theo nhu cầu” khi user bật module (file trong `/etc/cron.d/*`, service trong `/etc/systemd/system/*`).
   - **Đã thấy chắc chắn từ source**:
     - `ddos-blocker-xdp.service` (XDP)
     - cron files: `wptangtoc-ols.cron` (auto update), `reboot-check-service.cron` (service watchdog), `tai-nguyen-check.cron` (resource alert), `auto-restart-mariadb.cron` (DB watchdog), `database-toi-uu-hoa-all.cron` (auto optimize DB), `cai-ssl-auto-<domain>-tu-dong.cron` (auto cài SSL), `wp-cron-job-<domain>.cron` (WP cron), v.v.
   - **Đã chuẩn hoá inventory**:
     - Cron inventory: `docs/09-CRON-INVENTORY.md`
-    - Systemd inventory: `docs/10-SYSTEMD-INVENTORY.md` (đang bổ sung)
-- [ ] “Rollback story”: mỗi lớp tác động có quy trình revert như thế nào (gom thành playbook ngắn).
+    - Systemd inventory: `docs/10-SYSTEMD-INVENTORY.md`
+    - Shell hooks inventory: `docs/11-SHELL-HOOKS-INVENTORY.md`
+    - Root helpers inventory: `docs/12-ROOT-HELPERS-INVENTORY.md`
+- [x] “Rollback story”: mỗi lớp tác động có quy trình revert ngắn gọn trong `docs/05-RUNBOOKS.md`.
 
-## 7) Installer/runtime bootstrap — artefacts quan trọng (đã xác minh)
+## 7) Rollback story by impact layer
+
+- **Firewall / anti-DDoS**:
+  - rollback-first phải ưu tiên giữ được SSH
+  - xác định SSH port thật, mở session thứ 2, chỉ rollback từng layer một
+  - xem chi tiết: `docs/05-RUNBOOKS.md`
+- **Kernel / eBPF (XDP)**:
+  - stop/disable service, detach XDP khỏi NIC, remove pinned objects
+  - nếu map/pin còn treo sau detach, có thể cần reboot để clean hẳn
+- **System services / systemd**:
+  - stop/disable, remove unit hoặc drop-in, `daemon-reload`, rồi restart service đích
+- **Cron / automation**:
+  - xoá cron file `/etc/cron.d/*`, symlink `_cron` trên Ubuntu, wrapper `/etc/wptt-auto/*`, rồi restart `cron`/`crond`
+- **OLS global config**:
+  - restore `/usr/local/lsws/conf/httpd_config.conf` từ backup rồi restart OLS
+- **OLS per-vhost config**:
+  - restore `/usr/local/lsws/conf/vhosts/<domain>/<domain>.conf` rồi restart OLS
+- **.htaccess per-site**:
+  - remove marker block, restore backup nếu cần, clear cache liên quan
+- **Filesystem hardening**:
+  - bỏ `chattr +i` trước, rồi rollback owner/perms
+- **Cloud integration**:
+  - disable automation trước khi rotate/revoke secret; chỉ ghi secret location, không log giá trị
+
+## 8) Installer/runtime bootstrap — artefacts quan trọng (đã xác minh)
 
 - **Repo → runtime copy**:
   - runtime scripts nằm ở `/etc/wptt/*`
@@ -149,4 +175,7 @@ Tạm thời (sẽ chuẩn hoá khi đọc toàn bộ code):
     - `alias 1='wptangtoc'`, `alias 00='. /etc/wptt/search-wptangtoc'`, `alias 99='. /etc/wptt/wptt-update'`, `alias 999='. /etc/wptt/wptt-update2 999'`
     - `. /etc/wptt/wptt-status` (dashboard + SSH login alert hook nếu bật)
     - `. /etc/wptt/wptt-check` (thông báo update nếu có)
+  - một số flow domain/user tạo thêm per-site `.bashrc` cho user shell riêng
+  - SFTP jail append marker block `#begin-WPTT_JAIL_*` / `#end-WPTT_JAIL_*` vào `/etc/ssh/sshd_config`
+  - xem inventory chi tiết: `docs/11-SHELL-HOOKS-INVENTORY.md`
 

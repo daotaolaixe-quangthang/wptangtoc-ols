@@ -209,3 +209,67 @@ Mục tiêu: khi conversation chat yêu cầu “bật/tắt/sửa” các tính
   - ưu tiên disable automation (cron/service) trước khi rotate token
   - rotate secret ở đúng file + permission đúng (root-only)
 
+---
+
+## 12) IP / Fail2ban (block / unblock / unban-all)
+
+- **Pre-check**:
+  - xác định backend đang active: CSF, nftables hay firewalld
+  - grep deny hiện tại trong `/usr/local/lsws/conf/httpd_config.conf`
+  - nếu block nhầm IP quản trị, chuẩn bị session/console dự phòng
+- **Verify**:
+  - `fail2ban-client status`
+  - grep rule trong backend firewall active
+  - grep deny trong `httpd_config.conf`
+- **Rollback**:
+  - với 1 IP: dùng flow unblock
+  - với trạng thái rối nhiều lớp: unban ở fail2ban trước, rồi remove firewall rule, rồi clean deny trong OLS
+  - `unban-all` chỉ dùng khi chấp nhận mất toàn bộ deny runtime
+
+---
+
+## 13) SSH port / sshd changes
+
+- **Pre-check**:
+  - đọc port hiện tại từ `/etc/ssh/sshd_config`
+  - mở sẵn session SSH thứ 2 hoặc console rescue
+  - kiểm tra trùng port với OLS WebAdmin và MariaDB remote
+- **Verify**:
+  - `sshd -t`
+  - SSH login được trên port mới
+  - fail2ban/firewall đã sync theo port mới
+- **Rollback**:
+  - restore port cũ trong `sshd_config`
+  - restore fail2ban/firewall config cũ
+  - restart `sshd`, reload fail2ban
+
+---
+
+## 14) PHP version / php.ini changes
+
+- **Pre-check**:
+  - xác định đang sửa PHP per-domain hay toàn server
+  - note version cũ và path php.ini cũ
+  - backup file config trước khi edit
+- **Verify**:
+  - `php -v` cho all-server, hoặc `wptt-php-version-domain` cho 1 site
+  - OLS restart OK
+  - site/WP CLI không lỗi
+- **Rollback**:
+  - đổi lại version cũ bằng cùng flow
+  - restore php.ini từ backup hoặc dùng script restore php.ini
+
+---
+
+## 15) Config editor / webserver config changes
+
+- **Pre-check**:
+  - xác định rõ layer: OLS global, vhost, `.htaccess`, MariaDB, Redis, fail2ban, cron
+  - backup file đích trước khi mở editor
+- **Verify**:
+  - restart/reload đúng service
+  - test response hoặc status command tương ứng
+- **Rollback**:
+  - restore file backup
+  - restart/reload service đích
+

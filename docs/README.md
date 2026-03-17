@@ -22,6 +22,14 @@ Mục tiêu của thư mục `docs/` là để **con người và AI Agent**:
 - `08-AI-SKILL-CARDS.md`: skill cards (SOP portable) để AI làm đúng ngay và ít token sai.
 - `09-CRON-INVENTORY.md`: inventory cron runtime artefacts (`/etc/cron.d/*` + rollback nhanh).
 - `10-SYSTEMD-INVENTORY.md`: inventory systemd runtime artefacts (`/etc/systemd/system/*` + rollback nhanh).
+- `11-SHELL-HOOKS-INVENTORY.md`: inventory shell hooks runtime (`/root/.bashrc`, per-site `.bashrc`, `sshd_config` jail markers).
+- `12-ROOT-HELPERS-INVENTORY.md`: inventory helper scripts root-level có side effects runtime.
+- `13-BUG-TRIAGE-INDEX.md`: đường vào nhanh để AI Agent khoanh bug theo impact layer và chọn đúng docs/source cần đọc.
+- `14-SOURCE-TO-RUNTIME-TRACE.md`: map nhanh từ menu/script sang runtime files, services, verify, rollback.
+- `15-KNOWN-RISKS-PATTERNS.md`: các pattern lỗi/rủi ro lặp lại để review bugfix và thay đổi an toàn hơn.
+- `16-PLATFORM-AGNOSTIC-CAPABILITIES.md`: tách các capability lõi của hệ thống ra khỏi PHP/WordPress/OLS để có thể tái sử dụng cho stack khác.
+- `17-PORTING-MAP-PHP-TO-OTHER-STACKS.md`: bản đồ port logic từ WPTangToc OLS sang Node.js hoặc stack production khác.
+- `18-DESIGN-PATTERNS-EXTRACTED.md`: các pattern thiết kế và vận hành có thể copy như blueprint cho control plane mới.
 
 ## Quy ước cập nhật tài liệu
 

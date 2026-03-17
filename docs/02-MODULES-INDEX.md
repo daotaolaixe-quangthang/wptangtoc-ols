@@ -1390,10 +1390,495 @@ Các cảnh báo hiện có chia thành:
   - Gỡ cron cleanup + xoá `/etc/xdp-protection`
   - Nếu `bpftool map list` vẫn còn map: **reboot** để clean hẳn (script remove có nhắc).
 
+### IP / Fail2ban
+
+- **Entrypoint**: `wptt-khoa-ip-main`
+- **Scripts liên quan**:
+  - `fail2ban/wptt-khoa-ip`
+  - `fail2ban/wptt-mokhoaip`
+  - `fail2ban/wptt-list`
+  - `fail2ban/unban-all`
+- **Impact layers**:
+  - OLS global config
+  - fail2ban jails
+  - system firewall (CSF / nftables / firewalld)
+  - audit log
+
+#### Menu dispatch (`wptt-khoa-ip-main`)
+
+- Menu có 4 nhánh:
+  - block IP
+  - unblock IP
+  - list blocked IP
+  - unban all
+- Từ `run_action(index)`:
+  - `0` → `/etc/wptt/fail2ban/wptt-khoa-ip`
+  - `1` → `/etc/wptt/fail2ban/wptt-mokhoaip`
+  - `2` → `/etc/wptt/fail2ban/wptt-list`
+  - `3` → `/etc/wptt/fail2ban/unban-all`
+
+#### Block IP (`fail2ban/wptt-khoa-ip`)
+
+- **Flow chính**:
+  - đọc IP nhập vào, validate IPv4/IPv6
+  - append deny vào `/usr/local/lsws/conf/httpd_config.conf`
+  - `fail2ban-client set sshd banip <ip>`
+  - nếu có `csf` → `csf -d <ip>`
+  - nếu `nftables` active → call `/etc/wptt/bao-mat/nftables/block-ip-nftables.sh <ip>`
+  - nếu `firewalld` active → add rich rule reject tương ứng family ipv4/ipv6
+  - restart OLS
+  - ghi log `/var/log/wptangtoc-ols.log`
+- **State changes**:
+  - `/usr/local/lsws/conf/httpd_config.conf`
+  - backend firewall active hiện tại
+  - fail2ban runtime state
+  - `/var/log/wptangtoc-ols.log`
+- **Verify**:
+  - grep deny trong `httpd_config.conf`
+  - `fail2ban-client status sshd`
+  - kiểm tra rule ở CSF / nftables / firewalld nếu backend tương ứng đang bật
+- **Rollback**:
+  - dùng `fail2ban/wptt-mokhoaip`
+  - hoặc remove deny trong `httpd_config.conf`, unban fail2ban, remove rule firewall tương ứng
+
+#### Unblock IP (`fail2ban/wptt-mokhoaip`)
+
+- **Flow chính**:
+  - unban IP ở tất cả jail fail2ban đang active
+  - remove deny khỏi `httpd_config.conf`
+  - `csf -dr <ip>` nếu có CSF
+  - remove rich rule firewalld
+  - call `bao-mat/nftables/unban.sh <ip>` nếu nftables active
+  - restart OLS
+  - ghi log `/var/log/wptangtoc-ols.log`
+- **State changes**:
+  - giống chiều ngược lại của block IP
+- **Verify**:
+  - grep không còn IP trong `httpd_config.conf`
+  - `fail2ban-client status <jail>` không còn IP
+  - rule backend firewall không còn
+- **Rollback**:
+  - chạy lại block IP nếu cần re-ban
+
+#### List blocked IP (`fail2ban/wptt-list`)
+
+- **Flow chính**:
+  - tổng hợp từ:
+    - `/var/log/fail2ban.log*`
+    - `/etc/csf/csf.deny`
+    - deny trong `httpd_config.conf`
+    - rich rules của `firewalld`
+  - merge, dedupe rồi in ra
+- **Impact**: read-only
+- **Pitfalls**:
+  - list là aggregation runtime, không phải source of truth duy nhất cho mọi backend
+
+#### Unban all (`fail2ban/unban-all`)
+
+- **Flow chính**:
+  - iterate toàn bộ jail fail2ban và unban từng IP
+  - reset `accessControl` trong `httpd_config.conf`
+  - restart OLS
+  - restart `nftables` nếu active
+  - flush deny của CSF (`csf -tf`, `csf -df`)
+  - remove toàn bộ rich rules reject của firewalld
+- **State changes**:
+  - `/usr/local/lsws/conf/httpd_config.conf`
+  - toàn bộ runtime block state của fail2ban / firewall
+- **Verify**:
+  - `fail2ban-client status` không còn banned list
+  - `httpd_config.conf` về `allow ALL` hoặc allowlist Cloudflare tương thích proxy mode
+- **Rollback**:
+  - không có rollback granular; cần re-block thủ công các IP thực sự cần chặn
+
+#### Caveats / rủi ro vận hành
+
+- Block/unblock IP không chỉ đụng 1 backend; script cố đồng bộ nhiều lớp cùng lúc.
+- Nếu backend firewall và fail2ban không cùng hướng, có thể xảy ra trạng thái “đã unban ở jail nhưng vẫn còn rule firewall”.
+- `unban-all` là thao tác lớn, có thể xoá cả deny hợp lệ đã cấu hình trước đó ở OLS/firewall.
+
 ### SSH
 
 - **Entrypoint**: `wptt-ssh-main`
-- **Notes**: (điền khi đọc sâu)
+- **Scripts liên quan**:
+  - `ssh/wptt-passwd`
+  - `ssh/wptt-ssh-port`
+  - `ssh/wptt-set-timeout-ssh`
+  - `bao-mat/thong-bao-login-ssh`
+  - `domain/wptt-khoi-tao-user`
+- **Impact layers**:
+  - `sshd_config`
+  - firewall / fail2ban / SELinux port mapping
+  - `.wptt.conf`
+  - shell hooks (`/root/.bashrc`)
+
+#### Menu dispatch (`wptt-ssh-main`)
+
+- Menu có 5 nhánh:
+  - đổi password SSH user
+  - đổi SSH port
+  - setup alert login SSH qua Telegram
+  - bật/tắt username riêng domain / SFTP user
+  - đổi timeout SSH
+
+#### Đổi password SSH user (`ssh/wptt-passwd`)
+
+- **Flow chính**:
+  - liệt kê user shell từ `/etc/passwd`
+  - gọi `passwd <user>`
+  - so md5 `/etc/shadow` trước/sau để detect thay đổi
+  - ghi audit log vào `/var/log/wptangtoc-ols.log`
+- **State changes**:
+  - `/etc/shadow`
+  - `/var/log/wptangtoc-ols.log`
+- **Verify**:
+  - `passwd` thành công
+  - checksum `/etc/shadow` đổi
+- **Rollback**:
+  - không có rollback tự động; chỉ có thể đổi lại password lần nữa
+
+#### Đổi SSH port (`ssh/wptt-ssh-port`)
+
+- **Flow chính**:
+  - đọc port hiện tại từ `/etc/ssh/sshd_config`, fallback `22`
+  - guard tránh trùng port với `80`, `443`, port WebAdmin OLS, MariaDB remote port
+  - rewrite `Port <new>` trong `/etc/ssh/sshd_config`
+  - `semanage port -a -t ssh_port_t -p tcp <new>` nếu có SELinux tools
+  - update firewall backend active:
+    - firewalld add new/remove old
+    - CSF update `TCP_IN`
+    - nftables patch config rồi restart
+  - rewrite `/etc/fail2ban/jail.d/sshd.local`
+  - reload/restart `sshd`, reload fail2ban
+  - update `port_ssh=<new>` trong `/etc/wptt/.wptt.conf`
+- **State changes**:
+  - `/etc/ssh/sshd_config`
+  - `/etc/fail2ban/jail.d/sshd.local`
+  - `/etc/wptt/.wptt.conf`
+  - active firewall backend config
+- **Verify**:
+  - `sshd -t`
+  - mở session SSH thứ 2 trên port mới trước khi đóng session cũ
+  - `fail2ban-client status sshd`
+- **Rollback**:
+  - revert port cũ trong `sshd_config`
+  - restore firewall rules cũ
+  - restore `sshd.local`
+  - restart `sshd` và reload fail2ban
+
+#### Alert login SSH qua Telegram (`bao-mat/thong-bao-login-ssh`)
+
+- **Context**:
+  - đường alert này không chỉ là cron/service; nó dựa vào shell hook runtime
+- **State changes**:
+  - flag `thong_bao_login_ssh=1` trong `/etc/wptt/.wptt.conf`
+  - hook `. /etc/wptt/wptt-status` trong `/root/.bashrc`
+- **Verify**:
+  - shell root interactive mới phải source hook
+  - có Telegram token/chat ID trong `.wptt.conf`
+- **Rollback**:
+  - remove flag trong `.wptt.conf`
+  - remove shell hook nếu muốn tắt hẳn đường alert này
+- **Pitfalls**:
+  - chỉ bắt tốt interactive SSH login; non-interactive automation có thể không trigger
+
+#### Bật/tắt username riêng domain / SFTP user (`domain/wptt-khoi-tao-user`)
+
+- **Flow chính**:
+  - tạo user per-site
+  - append/remove block `Match User` trong `/etc/ssh/sshd_config`
+  - setup chroot/internal-sftp
+  - restart `sshd` sau khi verify syntax
+- **State changes**:
+  - `/etc/ssh/sshd_config`
+  - user/group hệ thống
+  - state file per-site `/etc/wptt/vhost/.$domain.conf`
+- **Verify**:
+  - `sshd -t`
+  - grep marker `#begin-WPTT_JAIL_<user>`
+  - test login SFTP user
+- **Rollback**:
+  - remove block marker trong `sshd_config`
+  - restart `sshd`
+  - disable/remove user theo flow domain nếu cần
+
+#### SSH timeout (`ssh/wptt-set-timeout-ssh`)
+
+- **Flow chính**:
+  - toggle giữa:
+    - mặc định comment `#ClientAliveInterval 0` / `#ClientAliveCountMax 3`
+    - timeout bật `ClientAliveInterval 28800` / `ClientAliveCountMax 3`
+  - restart `sshd`
+- **State changes**:
+  - `/etc/ssh/sshd_config`
+- **Verify**:
+  - grep `ClientAliveInterval`
+  - `sshd -t`
+- **Rollback**:
+  - đổi lại về trạng thái comment mặc định
+
+#### Caveats / rủi ro vận hành
+
+- SSH port đổi là thao tác lockout-risk cao vì đụng đồng thời `sshd`, firewall, fail2ban, SELinux.
+- SFTP jail sửa trực tiếp `sshd_config`; luôn cần `sshd -t` trước restart.
+- Alert login SSH là shell hook, không phải PAM; đừng kỳ vọng coverage như audit subsystem.
+
+### PHP
+
+- **Entrypoint**: `wptt-php-ini-main`
+- **Scripts liên quan**:
+  - `php/wptt-sua-phpini`
+  - `php/wptt-php-ini-uploads`
+  - `php/wptt-php-max-input-time`
+  - `php/wptt-php-max-input-vars`
+  - `php/wptt-domain-php`
+  - `php/wptt-php-version-all-server`
+  - `php/wptt-php-version-domain`
+  - `php/php-extension-them`
+  - `php/php-extension-xoa`
+  - `php/wptt-php-max-execution-time`
+  - `php/wptt-php-memory-limit-ram-php`
+  - `php/wptt-khoi-phuc-sua-phpini`
+- **Impact layers**:
+  - OLS global / per-vhost config
+  - PHP packages/extensions
+  - `.wptt.conf` và `vhost/.$domain.conf`
+  - CLI PHP symlink toàn server
+
+#### Menu dispatch (`wptt-php-ini-main`)
+
+- Menu gom hai nhóm thao tác:
+  - sửa giá trị php.ini / extensions
+  - đổi PHP version per-domain hoặc all-server
+
+#### Sửa php.ini (`php/wptt-sua-phpini`)
+
+- **Flow chính**:
+  - detect `LSPHP` qua `php/wptt-php-version-domain` và `php/tenmien-php`
+  - resolve đúng path `php.ini` theo distro:
+    - Ubuntu: `/usr/local/lsws/<lsphp>/etc/php/<ver>/litespeed/php.ini`
+    - RHEL-like: `/usr/local/lsws/<lsphp>/etc/php.ini`
+  - mở file bằng editor cấu hình (`nano` fallback)
+  - nếu checksum đổi → restart OLS
+- **State changes**:
+  - php.ini của version được chọn
+  - `/var/log/wptangtoc-ols.log`
+- **Verify**:
+  - file tồn tại
+  - OLS restart OK
+- **Rollback**:
+  - restore php.ini từ backup/editor history nếu có
+  - hoặc dùng `php/wptt-khoi-phuc-sua-phpini`
+
+#### Upload size / max_input_time / max_input_vars / max_execution_time / memory_limit
+
+- **Scripts**:
+  - `wptt-php-ini-uploads`
+  - `wptt-php-max-input-time`
+  - `wptt-php-max-input-vars`
+  - `wptt-php-max-execution-time`
+  - `wptt-php-memory-limit-ram-php`
+- **Impact**:
+  - edit trực tiếp php.ini của version đang chọn
+  - restart OLS để apply
+- **Rollback**:
+  - set lại giá trị cũ
+  - hoặc restore php.ini
+
+#### Đổi PHP version theo domain (`php/wptt-domain-php`)
+
+- **Flow chính**:
+  - chọn website, đọc state file `/etc/wptt/vhost/.$NAME.conf`
+  - quét repo LiteSpeed để list `lsphpXX` khả dụng
+  - guard tương thích tối thiểu với WordPress core version
+  - nếu thiếu package → cài thêm PHP + extensions cần thiết
+  - patch `/usr/local/lsws/conf/vhosts/$NAME/$NAME.conf` sang `lsphpXX`
+  - update `phien_ban_php_domain=<x.y>` trong `/etc/wptt/vhost/.$NAME.conf`
+  - nếu có file manager thì đảm bảo zip extension tồn tại
+  - restart OLS
+- **State changes**:
+  - `/usr/local/lsws/conf/vhosts/$NAME/$NAME.conf`
+  - `/etc/wptt/vhost/.$NAME.conf`
+  - package/extensions của `lsphpXX`
+  - php.ini mặc định của version mới được cài có thể bị tune thêm
+- **Verify**:
+  - grep `lsphpXX` trong vhost conf
+  - `php/wptt-php-version-domain`
+  - test WP CLI/site response
+- **Rollback**:
+  - đổi domain về version cũ bằng cùng script
+
+#### Đổi PHP version toàn server (`php/wptt-php-version-all-server`)
+
+- **Flow chính**:
+  - quét repo LiteSpeed và cài package/extensions nếu thiếu
+  - patch `httpd_config.conf` sang `lsphpXX`
+  - patch toàn bộ vhost conf sang version mới
+  - update `php_version_check=<x.y>` trong `/etc/wptt/.wptt.conf`
+  - update `phien_ban_php_domain=<x.y>` trong từng `vhost/.$domain.conf`
+  - đổi symlink CLI:
+    - `/usr/bin/php`
+    - `/usr/local/lsws/fcgi-bin/lsphp5`
+    - `/usr/local/lsws/fcgi-bin/lsphpXX`
+  - restart OLS
+- **State changes**:
+  - `/usr/local/lsws/conf/httpd_config.conf`
+  - `/usr/local/lsws/conf/vhosts/*/*.conf`
+  - `/etc/wptt/.wptt.conf`
+  - `/etc/wptt/vhost/.*.conf`
+  - symlink CLI PHP
+- **Verify**:
+  - `php -v`
+  - grep version mới trong OLS conf/vhost conf
+  - test vài site tiêu biểu
+- **Rollback**:
+  - chạy lại script với version cũ
+
+#### Kiểm tra PHP version (`php/wptt-php-version-domain`)
+
+- **Mục đích**:
+  - đọc PHP version effective theo domain để các script khác dùng đúng path/config
+- **Impact**: read-only
+
+#### Cài / xoá PHP extensions (`php/php-extension-them`, `php/php-extension-xoa`)
+
+- **Impact**:
+  - package manager + php module dirs của `lsphpXX`
+- **Verify**:
+  - `/usr/local/lsws/lsphpXX/bin/php -m`
+- **Rollback**:
+  - cài lại hoặc gỡ extension tương ứng
+
+#### Restore php.ini (`php/wptt-khoi-phuc-sua-phpini`)
+
+- **Mục đích**:
+  - phục hồi php.ini về bản backup/template của flow PHP hiện có
+- **Verify**:
+  - diff/grep giá trị mục tiêu
+  - restart OLS thành công
+
+#### Caveats / rủi ro vận hành
+
+- PHP all-server change là global-impact: đụng OLS global, mọi vhost, CLI symlink.
+- Script có logic cài package từ repo chính hoặc fallback repo EOL; docs phải coi đây là state change mức package system.
+- Nhiều flow PHP còn tune opcache/JIT và php.ini mặc định ngay khi cài version mới.
+
+### Webserver Configuration
+
+- **Entrypoint**: `wptt-cau-hinh-websever-main`
+- **Scripts liên quan**:
+  - `cau-hinh/wptt-sua-websever`
+  - `cau-hinh/wptt-cau-hinh-vhost`
+  - `cau-hinh/wptt-sua-mariadb`
+  - `cau-hinh/wptt-cau-hinh-htaccess`
+  - `cau-hinh/wptt-cron`
+  - `cau-hinh/wptt-cau-hinh-redis`
+  - `cau-hinh/wptt-cau-hinh-fail2ban`
+  - `cau-hinh/wptt-hostname`
+  - `cau-hinh/wptt-editor-cau-hinh`
+- **Impact layers**:
+  - OLS global config
+  - OLS per-vhost config
+  - `.htaccess`
+  - MariaDB / Redis / fail2ban configs
+  - cron
+  - hostname/system identity
+
+#### Menu dispatch (`wptt-cau-hinh-websever-main`)
+
+- Menu này là “generic config editor hub”.
+- Hầu hết action mở editor hoặc gọi helper sửa file config trực tiếp rồi quay lại menu.
+- Đây là cụm high-risk vì người dùng có thể sửa tay các file nền tảng.
+
+#### Sửa OLS global config (`cau-hinh/wptt-sua-websever`)
+
+- **Context**:
+  - sửa trực tiếp file cấu hình OLS global
+- **State changes**:
+  - chủ yếu ở `/usr/local/lsws/conf/httpd_config.conf`
+- **Verify**:
+  - restart OLS thành công
+  - site vẫn response
+- **Rollback**:
+  - restore file backup trước khi edit
+
+#### Sửa vhost config (`cau-hinh/wptt-cau-hinh-vhost`)
+
+- **State changes**:
+  - `/usr/local/lsws/conf/vhosts/<domain>/<domain>.conf`
+- **Verify**:
+  - grep context/listener/handler mục tiêu
+  - restart OLS
+- **Rollback**:
+  - restore backup vhost conf
+
+#### Sửa MariaDB config (`cau-hinh/wptt-sua-mariadb`)
+
+- **State changes**:
+  - distro-specific MariaDB config file
+- **Verify**:
+  - `mariadb` hoặc `systemctl status mariadb`
+- **Rollback**:
+  - restore config backup rồi restart DB
+
+#### Sửa `.htaccess` template/path (`cau-hinh/wptt-cau-hinh-htaccess`)
+
+- **State changes**:
+  - `.htaccess` của website được chọn
+- **Verify**:
+  - redirect/rule không loop
+  - admin vẫn truy cập được
+- **Rollback**:
+  - restore `.htaccess` backup hoặc remove marker block
+
+#### Sửa cron config (`cau-hinh/wptt-cron`)
+
+- **State changes**:
+  - `/etc/cron.d/*` hoặc user crontab tuỳ flow cụ thể
+- **Verify**:
+  - `crontab -l`
+  - restart `cron` / `crond` nếu cần
+- **Rollback**:
+  - remove cron entry/file đã thêm
+
+#### Sửa Redis config (`cau-hinh/wptt-cau-hinh-redis`)
+
+- **State changes**:
+  - redis/valkey config runtime
+- **Verify**:
+  - service active
+  - socket/port đúng
+- **Rollback**:
+  - restore config và restart service
+
+#### Sửa Fail2ban config (`cau-hinh/wptt-cau-hinh-fail2ban`)
+
+- **State changes**:
+  - `/etc/fail2ban/jail.local` hoặc file liên quan
+- **Verify**:
+  - `fail2ban-client status`
+- **Rollback**:
+  - restore config backup rồi restart fail2ban
+
+#### Đổi hostname (`cau-hinh/wptt-hostname`)
+
+- **Impact**:
+  - system identity / prompt / mail/reporting side effects
+- **Rollback**:
+  - set hostname cũ
+
+#### Generic config editor (`cau-hinh/wptt-editor-cau-hinh`)
+
+- **Context**:
+  - editor tổng quát cho các file cấu hình
+- **Pitfalls**:
+  - vì là generic editor, mọi verify/rollback phụ thuộc loại file được chọn
+
+#### Caveats / rủi ro vận hành
+
+- Đây là cụm “đi thẳng vào file cấu hình”, nên docs phải coi là high-trust/high-risk.
+- Bất kỳ thay đổi nào ở đây đều cần backup file trước khi mở editor.
+- Nếu user chỉ nói “sửa cấu hình webserver”, AI phải xác định đúng file/layer trước khi hướng dẫn.
 
 ### Update / Maintenance
 
@@ -1693,11 +2178,123 @@ Các cảnh báo hiện có chia thành:
 - **Rollback**:
   - Bật/tắt logs là reversible bằng các script toggle tương ứng; “xoá logs” không rollback (data mất).
 
+### Add-ons / Premium
+
+- **Entrypoint**: `wptt-add-one-main`
+- **Scripts liên quan**:
+  - `add-one/activate-key`
+  - `add-one/thiet-lap-downtimes`
+  - `add-one/thiet-lap-check-ssl`
+  - `add-one/thiet-lap-check-domain-het-han`
+  - `add-one/add-premium`
+  - `add-one/thiet-lap-auto-htaccess-optimize`
+  - root helpers được gọi gián tiếp: `wptt-reset`, `wptt-htaccess-reset`, `cloudflare-cdn-ip-show-real`, `ip-scan-block`
+- **Impact layers**:
+  - cron/automation
+  - `.htaccess`
+  - cloud/API integration
+  - runtime premium dependency ngoài repo hiện tại
+
+#### Menu dispatch (`wptt-add-one-main`)
+
+- Menu gom cả activate key, add-on monitoring, backup uploads qua Telegram, premium security/optimization và một số factory-reset helper.
+- Nhiều nhánh gọi `add-one/add-premium <mode>` thay vì script tách riêng.
+
+#### Activate key (`add-one/activate-key`)
+
+- **State changes**:
+  - key/license runtime trong `.wptt.conf` hoặc file premium runtime tương ứng
+- **Verify**:
+  - menu premium/action premium không còn báo chưa kích hoạt
+- **Rollback**:
+  - remove/deactivate key theo flow premium runtime
+
+#### Downtime API check (`add-one/thiet-lap-downtimes`)
+
+- **Context**:
+  - đây là đường chính hiện tại cho downtime check premium/API
+- **State changes**:
+  - cron/service/runtime dependency premium như `/etc/wptt/add-one/check.sh`
+- **Pitfalls**:
+  - template source hiện tại không chứa toàn bộ implementation check runtime
+- **Rollback**:
+  - remove automation premium tương ứng
+
+#### SSL expiry check / Domain expiry check
+
+- **Scripts**:
+  - `add-one/thiet-lap-check-ssl`
+  - `add-one/thiet-lap-check-domain-het-han`
+- **Impact**:
+  - monitoring/alerts
+  - thường là cron/API-based flow
+- **Rollback**:
+  - disable/remove setup premium tương ứng
+
+#### Telegram uploads backup (`add-one/add-premium` với mode backup/restore/auto-backup-setup/tat-auto-backup)
+
+- **State changes**:
+  - premium backup automation
+  - Telegram/cloud secret usage
+- **Verify**:
+  - job tồn tại và có thể upload/restore
+- **Rollback**:
+  - remove automation premium; giữ nguyên nguyên tắc không log secrets
+
+#### Premium security scan (`add-one/add-premium quet-bao-mat-wordpress`)
+
+- **Impact**:
+  - chủ yếu read/analyze, nhưng có thể phát sinh report hoặc remote API usage
+- **Pitfalls**:
+  - behaviour chi tiết phụ thuộc runtime premium code không nằm trọn trong repo template
+
+#### Factory reset helpers (`wptt-reset`, `wptt-htaccess-reset`)
+
+- **Impact**:
+  - high-risk; reset về trạng thái mặc định server hoặc `.htaccess`
+- **Rollback**:
+  - chỉ an toàn khi đã có backup config/site trước đó
+
+#### Auto htaccess optimize (`add-one/thiet-lap-auto-htaccess-optimize`)
+
+- **Impact**:
+  - `.htaccess` per-site / automation
+- **Rollback**:
+  - remove automation và revert marker blocks tối ưu hóa nếu có
+
+#### Real IP bypass Cloudflare (`cloudflare-cdn-ip-show-real`)
+
+- **Impact**:
+  - OLS / reverse proxy / trusted IP handling
+- **Rollback**:
+  - revert trusted proxy/real IP config đã thêm
+
+#### Custom X-Powered-By (`add-one/add-premium custom-x-powered-by`)
+
+- **Impact**:
+  - header exposure / branding
+- **Rollback**:
+  - revert header customization
+
+#### Block direct IP access (`ip-scan-block`)
+
+- **Impact**:
+  - OLS rules / firewall / anti-scan behavior
+- **Rollback**:
+  - remove block rule, verify domain access qua host header vẫn đúng
+
+#### Caveats / rủi ro vận hành
+
+- Premium/add-on là cụm dễ lệch nhất giữa repo template và runtime thật.
+- Nếu không thấy source implementation đầy đủ trong repo, docs phải ghi rõ “runtime dependency” thay vì đoán.
+- Các factory reset helper phải được xem là destructive/high-impact.
+
 ### Others
 
 - **Duplicate / clone website**: `wptt-sao-chep-website`
 - **Move website**: `wptt-chuyen-web-main`
 - **Preload cache**: `wptt-preload-cache2`
+- **Community / support**: `wptt-feedback`, `wptt-donate`, `wptt-nhom-fb`
 - **Language**: `lang-main`
 - **Docs search**: `search-wptangtoc-huong-dan`
 - **Add-ons**: `wptt-add-one-main`
@@ -1754,6 +2351,58 @@ Các cảnh báo hiện có chia thành:
 - **State**:
   - Chủ yếu tạo cache ở layer plugin/server; không có state file riêng của WPTT ngoài audit log.
 
+#### Community / support entrypoints (`wptt-feedback`, `wptt-donate`, `wptt-nhom-fb`)
+
+- **Mục tiêu**: các entry phụ từ menu chính dùng để mở luồng feedback, donate, hoặc community/support channel.
+- **Entrypoint / scripts**:
+  - `wptangtoc` dispatch trực tiếp tới:
+    - `/etc/wptt/wptt-feedback`
+    - `/etc/wptt/wptt-donate`
+    - `/etc/wptt/wptt-nhom-fb`
+- **Impact layers**:
+  - thường là output/UI hoặc mở thông tin hướng dẫn liên hệ
+  - có thể gọi browser/text client hoặc hiển thị link/channel; template source hiện tại không cho thấy thay đổi runtime state
+- **State changes**:
+  - không thấy state file riêng trong template source hiện tại
+- **Verify**:
+  - chạy entry từ menu chính, xác nhận script tồn tại ở runtime và chỉ hiển thị/điều hướng đúng nội dung mong đợi
+- **Rollback**:
+  - hầu như không cần rollback cấu hình; nếu runtime wrapper bị lỗi thì khôi phục script wrapper trong `/etc/wptt/`
+- **Known issues / pitfalls**:
+  - đây là nhóm runtime wrappers; repo template hiện tại chỉ cho thấy dispatch từ `wptangtoc`, không chứa implementation chi tiết của các wrapper này
+
+#### Language selector (`lang-main`)
+
+- **Mục tiêu**: đổi ngôn ngữ hiển thị cho CLI/tooling ở runtime.
+- **Entrypoint / scripts**:
+  - `wptangtoc` dispatch tới `/etc/wptt/lang-main`
+- **Impact layers**:
+  - shell UI / locale markers / text rendering ở runtime
+- **State changes**:
+  - template source hiện tại không cho thấy file state cụ thể; nhiều khả năng script runtime ghi marker cấu hình ngôn ngữ riêng
+- **Verify**:
+  - chạy menu đổi ngôn ngữ, thoát ra và vào lại menu chính để xem text/UI có đổi hay không
+- **Rollback**:
+  - đổi lại ngôn ngữ cũ qua cùng menu, hoặc khôi phục marker/runtime file do `lang-main` quản lý
+- **Known issues / pitfalls**:
+  - vì repo template không chứa implementation của `lang-main`, docs chỉ coi đây là runtime artifact được `wptangtoc` gọi trực tiếp
+
+#### Docs search (`search-wptangtoc-huong-dan`)
+
+- **Mục tiêu**: tìm nhanh tài liệu/hướng dẫn từ menu CLI.
+- **Entrypoint / scripts**:
+  - `wptangtoc` dispatch tới `/etc/wptt/search-wptangtoc-huong-dan`
+- **Impact layers**:
+  - shell UI / search helper
+- **State changes**:
+  - không thấy state file hay service/runtime mutation trong template source hiện tại
+- **Verify**:
+  - chạy menu search, xác nhận script mở đúng luồng tra cứu docs/hướng dẫn
+- **Rollback**:
+  - nếu helper lỗi thì khôi phục runtime wrapper `/etc/wptt/search-wptangtoc-huong-dan`
+- **Known issues / pitfalls**:
+  - đây là low-priority utility; không nên giả định có side effect cấu hình nếu chưa xác minh từ runtime thật
+
 #### Emulation / staging (`gia-lap-website/*`)
 
 - **Mục tiêu**: tạo site “giả lập” dưới domain phục vụ `wptangtoc-ols.com` để test/staging.
@@ -1766,30 +2415,3 @@ Các cảnh báo hiện có chia thành:
   - flag `domain_gia_lap=1` trong `/etc/wptt/vhost/.<domain>.conf`.
 - **Rollback**:
   - Xoá staging site bằng `domain/wptt-xoa-website <staging-domain>`.
-
----
-
-## C) Checklist cho mỗi module (template)
-
-Sao chép mục này khi viết tài liệu từng module:
-
-### <Module Name>
-
-- **Entrypoint**: `wptt-...-main`
-- **Chức năng**:
-  - ...
-- **Flow**:
-  - menu → script con → side effects
-- **State**:
-  - global: ...
-  - per-site: ...
-  - markers: ...
-- **External deps**:
-  - packages/binaries/services
-- **Security considerations**:
-  - secrets, permissions, network access
-- **Rollback**:
-  - revert file X, restart service Y
-- **Known issues / pitfalls**:
-  - ...
-
