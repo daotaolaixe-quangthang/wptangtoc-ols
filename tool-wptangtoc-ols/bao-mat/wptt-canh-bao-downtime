@@ -3,10 +3,10 @@
 
 date="$(date "+%d-%m-%Y %H:%M")"
 
-function hello-giatuan() {
-
-  telegram_api='6888429490:AAEZ4dYrrX4B2BZWTJ3j9wsaPvXXvTBopXc'
-  telegram_id='1638096630'
+function send_telegram() {
+  if [[ -z "$telegram_api" || -z "$telegram_id" ]]; then
+    return 0
+  fi
 
   ip=$(curl -skf --connect-timeout 5 --max-time 10 https://ipv4.icanhazip.com | grep -E -o '(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)' || curl -skf --connect-timeout 5 --max-time 10 https://checkip.amazonaws.com | grep -E -o '(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)')
 
@@ -28,7 +28,7 @@ if [ "$(ls -A /etc/wptt/vhost | grep -v '^\.\.conf$' | sort -uV)" ]; then
       checkssl=$(curl -Is https://"${domain}" | head -n 1 | grep -c "200")
       checkssl2=$(curl -Is http://"${domain}" | head -n 1 | grep -c "200")
       if [[ "$checkssl" = "0" && "$checkssl2" = "0" ]]; then
-        hello-giatuan "$domain"
+        send_telegram "$domain"
       fi
     fi
 

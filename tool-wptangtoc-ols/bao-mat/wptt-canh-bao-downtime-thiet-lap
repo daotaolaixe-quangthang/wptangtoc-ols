@@ -1,11 +1,15 @@
 #!/bin/bash
 . /etc/wptt/.wptt.conf
-echo "tính năng này không thể sử dụng được hãy chuyển qua dùng add ons check bằng api"
+echo "Tính năng downtime trong Security (core) đã được chuyển sang Add-ons (API check)."
+echo "Đang chuyển bạn qua Add-ons để thiết lập downtime."
+sleep 2
+
 check_menu_wptangtoc_active=$1
 if [[ $check_menu_wptangtoc_active = "98" ]]; then
-  exec /etc/wptt/wptt-bao-mat-main 1
+  exec /etc/wptt/add-one/thiet-lap-downtimes 98
 fi
-exit
+
+exec /etc/wptt/add-one/thiet-lap-downtimes
 echo "/-----------------------------------------------------------------------/"
 echo "Bảo mật => Cảnh báo downtime webiste qua telegram"
 echo "/-----------------------------------------------------------------------/"
